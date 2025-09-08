@@ -1,0 +1,86 @@
+name: Push Image to ECR and Deploy
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-image-and-push-to-ecr:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    env:
+      AWS_REGION: eu-central-1
+      ECR_REPOSITORY: product-repo
+      CONTAINER_NAME: product-service-container
+      TASK_DEFINITION: dev-Webshop-service2-task-definition
+      ECS_SERVICE: dev-Webshop-service2-service
+      ECS_CLUSTER: dev-Webshop-cluster
+    steps:
+
+    - name: Checkout code into the runner
+      uses: actions/checkout@v4
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{secrets.AWS_ROLE_TO_ASSUME}}
+        aws-region: eu-central-1
+        role-duration-seconds: 900
+
+    - name: Set IMAGE_TAG
+      id: vars
+      run: echo "IMAGE_TAG=${GITHUB_SHA}" >> $GITHUB_ENV
+    
+    - name: Docker build and push to ECR
+      run: |
+        aws ecr get-login-password --region eu-central-1 | docker login --username AWS --password-stdin 041482691965.dkr.ecr.eu-central-1.amazonaws.com
+        docker build -t product-repo .
+        docker tag product-repo:latest 041482691965.dkr.ecr.eu-central-1.amazonaws.com/product-repo:${IMAGE_TAG}
+        docker push 041482691965.dkr.ecr.eu-central-1.amazonaws.com/product-repo:${IMAGE_TAG}
+
+    - name: Download task definition
+      run: |
+        aws ecs describe-task-definition --task-definition $TASK_DEFINITION --query taskDefinition > task-definition.json
+    
+    - name: Fill in the new image ID in the Amazon ECS task definition 
+      id: new-task-definition
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: ${{ env.CONTAINER_NAME }} 
+        image: 041482691965.dkr.ecr.eu-central-1.amazonaws.com/product-repo:${{ env.IMAGE_TAG }}
+
+    - name: Deploy updated ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@df9643053eda01f169e64a0e60233aacca83799a
+      with:
+          task-definition: ${{ steps.new-task-definition.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+    - name: Notify success
+      if: ${{ success() }}
+      run: |
+        curl -X POST -H 'Content-Type: application/json' \
+        --data "{\"text\": \"✅ Deployment successful! Version $IMAGE_TAG has been deployed. 🔗 View pipeline: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
+        ${{ secrets.WEBHOOK_URL }}
+
+    - name: Notify failure
+      if: ${{ failure() }}
+      env:
+        IMAGE_TAG: ${{ env.IMAGE_TAG }}
+      run: |
+        curl -X POST -H 'Content-Type: application/json' \
+        --data "{\"text\": \"❌ Deployment failed for version $IMAGE_TAG! Something went wrong. 🔗 Check the pipeline: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
+        ${{ secrets.WEBHOOK_URL }}
+    
+    - name: Notify cancelled
+      if: ${{ cancelled() }}
+      env:
+        IMAGE_TAG: ${{ env.IMAGE_TAG }}
+      run: |
+        curl -X POST -H 'Content-Type: application/json' \
+        --data "{\"text\": \"⚠️ Deployment was canceled. Version $IMAGE_TAG was not deployed. 🔗 Check the pipeline: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
+        ${{ secrets.WEBHOOK_URL }}
