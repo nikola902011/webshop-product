@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webshop-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webshop-product
+  template:
+    metadata:
+      labels:
+        app: webshop-product
+    spec:
+      containers:
+        - name: webshop-product
+          image: pruser:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 5001
+          envFrom:
+            - configMapRef:
+                name: webshop-dbp-config
+            - secretRef:
+                name: webshop-dbp-secret
